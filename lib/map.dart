@@ -26,6 +26,31 @@ class _MapPageState extends State<MapPage> {
     });
   }
 
+  /// Gọi hàm này ở bất kỳ đâu có `context`
+  void showToast(BuildContext context, String message) {
+    final overlay = Overlay.of(context);
+    if (overlay == null) return;
+
+    // Entry hiển thị toast
+    final overlayEntry = OverlayEntry(
+      builder: (context) => Positioned(
+        bottom: 80, // cách đáy 80px (tuỳ chỉnh)
+        left: MediaQuery.of(context).size.width * 0.1,
+        width: MediaQuery.of(context).size.width * 0.8,
+        child: Material(
+          color: Colors.transparent,
+          child: _ToastBody(message: message),
+        ),
+      ),
+    );
+
+    // Thêm vào overlay
+    overlay.insert(overlayEntry);
+
+    // Tự gỡ sau 2 giây
+    Future.delayed(const Duration(seconds: 2), () => overlayEntry.remove());
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -70,12 +95,19 @@ class _MapPageState extends State<MapPage> {
                       ? 'assets/images/map$mapIndex.png'
                       : 'assets/images/lock$mapIndex.png';
 
+                  // bên trong itemBuilder – giữ nguyên phần trên nha
                   return Padding(
                     padding: const EdgeInsets.only(bottom: 20),
                     child: GestureDetector(
                       onTap: () {
-                        Navigator.of(context).push(MaterialPageRoute(
-                            builder: (context) => Game1Page(level: mapIndex)));
+                        if (mapIndex <= unlockedMap) {
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                                builder: (_) => Game1Page(level: mapIndex)),
+                          );
+                        } else {
+                          showToast(context, 'Map is locked');
+                        }
                       },
                       child: Column(
                         children: [
@@ -88,7 +120,7 @@ class _MapPageState extends State<MapPage> {
                             'Map $mapIndex',
                             style: const TextStyle(
                                 color: Colors.white, fontSize: 34),
-                          )
+                          ),
                         ],
                       ),
                     ),
@@ -98,6 +130,31 @@ class _MapPageState extends State<MapPage> {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Widget “ruột” của toast
+class _ToastBody extends StatelessWidget {
+  const _ToastBody({required this.message});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        decoration: BoxDecoration(
+          color: Colors.black87,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Text(
+          message,
+          textAlign: TextAlign.center,
+          style: const TextStyle(color: Colors.white, fontSize: 16),
+        ),
       ),
     );
   }
