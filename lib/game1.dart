@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:runandhit/home.dart';
 import 'package:runandhit/map.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:audioplayers/audioplayers.dart';
 
 class Game1Page extends StatefulWidget {
   final int level;
@@ -15,12 +16,12 @@ class Game1Page extends StatefulWidget {
 }
 
 class _Game1PageState extends State<Game1Page> {
+  late final AudioPlayer _sfxPlayer;
   int target = 10;
   int nextLevel = 2;
   Offset playerPosition = const Offset(0, 0);
   Offset? targetPosition;
   List<Enemy> enemies = [];
-  final double playerSpeed = 3;
   Timer? spawnTimer;
   int spawnDelay = 800;
   final int minSpawnDelay = 200;
@@ -46,12 +47,29 @@ class _Game1PageState extends State<Game1Page> {
   int chestCount = 0;
   int freezeCount = 0;
   int flashCount = 0;
+  int magnetCount = 0;
+  int powerCount = 0;
+  List<Widget> magnetGlow = []; // quầng sáng
+  bool magnetActive = false; // nam châm đang chạy?
+  Timer? magnetTimer;
   bool isFrozen = false;
+  List<Widget> moveMarkers = [];
   List<Widget> lightningEffects = [];
+  List<Widget> hitEffects = [];
+  bool powerActive = false;
+  Timer? powerTimer;
+  List<Widget> powerAuras = [];
+
+  double baseSpeed = 3; // tốc độ gốc
+  double playerSpeed = 3; // luôn dùng biến này thay vì hằng
+  double baseSwordRot = 0.05; // tốc độ xoay gốc
+  double swordRotSpeed = 0.05; // biến dùng trong updateSwordRotation
+  Duration swordSpawnInterval = const Duration(seconds: 4); // gốc
 
   @override
   void initState() {
     super.initState();
+    _sfxPlayer = AudioPlayer()..setReleaseMode(ReleaseMode.stop);
     setVarable();
     loadGoldFromPrefs();
     loadPowerupsFromPrefs();
@@ -63,12 +81,17 @@ class _Game1PageState extends State<Game1Page> {
     moveTimer = Timer.periodic(const Duration(milliseconds: 16), (_) {
       moveTowardTouch();
       updateSwordRotation();
+      attractItems();
+
+      // nếu đang buff thì reposition aura
+      if (powerActive && powerAuras.isNotEmpty) {
+        powerAuras[0] = PowerAura(center: playerPosition);
+      }
     });
     enemyMoveTimer =
         Timer.periodic(const Duration(milliseconds: 30), (_) => moveEnemies());
 
-    swordSpawnTimer =
-        Timer.periodic(const Duration(seconds: 4), (_) => spawnSwords());
+    swordSpawnTimer = Timer.periodic(swordSpawnInterval, (_) => spawnSwords());
   }
 
   void setVarable() {
@@ -87,11 +110,40 @@ class _Game1PageState extends State<Game1Page> {
     }
   }
 
+  void showHitEffect(Offset pos) {
+    final key = UniqueKey();
+
+    safeSetState(() {
+      hitEffects.add(
+        Positioned(
+          key: key,
+          left: pos.dx - 25,
+          top: pos.dy - 25,
+          child: Image.asset(
+            'assets/images/enemy1.png',
+            width: 50,
+            color: Colors.red, // 🔴 tô đỏ
+            colorBlendMode: BlendMode.modulate,
+          ),
+        ),
+      );
+    });
+
+    // Tắt sau 100 ms
+    Future.delayed(const Duration(milliseconds: 100), () {
+      if (mounted && !isDisposed) {
+        safeSetState(() => hitEffects.removeWhere((w) => w.key == key));
+      }
+    });
+  }
+
   Future<void> loadPowerupsFromPrefs() async {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
       freezeCount = prefs.getInt('freeze') ?? 0;
       flashCount = prefs.getInt('flash') ?? 0;
+      magnetCount = prefs.getInt('magnet') ?? 0;
+      powerCount = prefs.getInt('power') ?? 0;
     });
   }
 
@@ -105,6 +157,41 @@ class _Game1PageState extends State<Game1Page> {
   Future<void> saveChestToPrefs() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt('chest', chestCount);
+  }
+
+  void showMoveMarker(Offset pos) {
+    final key = UniqueKey();
+
+    safeSetState(() {
+      moveMarkers
+        ..clear() // ⚡ xoá marker cũ
+        ..add(
+          Positioned(
+            key: key,
+            left: pos.dx - 24,
+            top: pos.dy - 24,
+            child: Image.asset('assets/images/move.png', width: 48),
+          ),
+        );
+    });
+
+    // Tự biến mất sau 3 giây
+    Future.delayed(const Duration(seconds: 3), () {
+      if (mounted && !isDisposed) {
+        safeSetState(() {
+          moveMarkers.removeWhere((w) => w.key == key);
+        });
+      }
+    });
+  }
+
+  Future<void> _playHurtSound() async {
+    try {
+      await _sfxPlayer.play(
+        AssetSource('sounds/hurt.mp3'),
+        volume: 0.8,
+      );
+    } catch (_) {/* ignore */}
   }
 
   void startSpawnLoop() {
@@ -122,7 +209,7 @@ class _Game1PageState extends State<Game1Page> {
 
   void updateSwordRotation() {
     safeSetState(() {
-      swordRotationAngle += 0.05; // tốc độ xoay
+      swordRotationAngle += swordRotSpeed; // tốc độ xoay
     });
   }
 
@@ -169,6 +256,7 @@ class _Game1PageState extends State<Game1Page> {
 
   @override
   void dispose() {
+    _sfxPlayer.dispose();
     spawnTimer?.cancel();
     swordSpawnTimer?.cancel();
     isDisposed = true;
@@ -207,6 +295,14 @@ class _Game1PageState extends State<Game1Page> {
     collectHeals();
   }
 
+  Future<void> _playAttackSound() async {
+    try {
+      await _sfxPlayer.play(AssetSource('sounds/attack.mp3'), volume: 0.7);
+    } catch (e) {
+      // ignore hoặc debugPrint('Sound error: $e');
+    }
+  }
+
   void moveEnemies() {
     if (isFrozen) return;
     final updatedEnemies = <Enemy>[];
@@ -231,6 +327,7 @@ class _Game1PageState extends State<Game1Page> {
         });
 
         if (hitBySword) {
+          showHitEffect(enemy.position);
           enemiesKilled++;
 
           if (enemiesKilled >= target && !isGameOver) {
@@ -310,22 +407,24 @@ class _Game1PageState extends State<Game1Page> {
   }
 
   void spawnSwords() {
+    _playAttackSound();
     safeSetState(() {
       swords = List.generate(5, (i) => RotatingSword(i * 2 * pi / 5));
     });
 
-    // Xoá kiếm sau 1 giây
-    Future.delayed(const Duration(seconds: 1), () {
-      if (mounted && !isGameOver) {
-        safeSetState(() {
-          swords.clear();
-        });
-      }
-    });
+    // 👉 chỉ clear nếu KHÔNG trong trạng thái power
+    if (!powerActive) {
+      Future.delayed(const Duration(seconds: 1), () {
+        if (mounted && !isGameOver && !powerActive) {
+          safeSetState(() => swords.clear());
+        }
+      });
+    }
   }
 
   void takeDamage() {
     if (health > 0) {
+      _playHurtSound();
       safeSetState(() {
         health--;
       });
@@ -334,6 +433,127 @@ class _Game1PageState extends State<Game1Page> {
         triggerGameOver();
       }
     }
+  }
+
+  void activatePower() async {
+    // 1️⃣ Trừ lượt, bật cờ buff + buff chỉ số
+    setState(() {
+      powerCount--;
+      powerActive = true; // đặt TRUE trước khi spawnSwords xoá
+      playerSpeed = baseSpeed * 1.8;
+      swordRotSpeed = baseSwordRot * 4;
+    });
+    (await SharedPreferences.getInstance()).setInt('power', powerCount);
+
+    // 2️⃣ Aura
+    powerAuras
+      ..clear()
+      ..add(PowerAura(center: playerPosition));
+
+    // 3️⃣ Dừng timer cũ & sinh kiếm ngay lập tức
+    swordSpawnTimer?.cancel();
+    spawnSwords(); // dùng hàm sẵn có – sẽ KHÔNG clear
+
+    // 4️⃣ Giữ buff 10 s rồi reset
+    powerTimer?.cancel();
+    powerTimer = Timer(const Duration(seconds: 10), () {
+      if (!mounted) return;
+
+      setState(() {
+        powerActive = false;
+        playerSpeed = baseSpeed;
+        swordRotSpeed = baseSwordRot;
+        swords.clear();
+        powerAuras.clear();
+      });
+
+      // khởi động lại timer burst 4 s
+      swordSpawnInterval = const Duration(seconds: 4);
+      swordSpawnTimer =
+          Timer.periodic(swordSpawnInterval, (_) => spawnSwords());
+    });
+  }
+
+  void attractItems() {
+    if (!magnetActive) return;
+
+    const pullSpeed = 8.0;
+
+    _playItemSound();
+
+    safeSetState(() {
+      // GOLD
+      for (var g in golds) {
+        if (!g.collected) {
+          final dir = (playerPosition - g.position).normalize();
+          g.position += dir * pullSpeed;
+          if ((g.position - playerPosition).distance < 25) {
+            g.collected = true;
+            addGold(1);
+          }
+        }
+      }
+      golds.removeWhere((g) => g.collected);
+
+      // HEAL
+      for (var h in heals) {
+        if (!h.collected) {
+          final dir = (playerPosition - h.position).normalize();
+          h.position += dir * pullSpeed;
+          if ((h.position - playerPosition).distance < 25) {
+            h.collected = true;
+            health = 5;
+          }
+        }
+      }
+      heals.removeWhere((h) => h.collected);
+
+      // CHEST
+      for (var c in chests) {
+        if (!c.collected) {
+          final dir = (playerPosition - c.position).normalize();
+          c.position += dir * pullSpeed;
+          if ((c.position - playerPosition).distance < 25) {
+            c.collected = true;
+            chestCount++;
+            saveChestToPrefs();
+          }
+        }
+      }
+      chests.removeWhere((c) => c.collected);
+    });
+  }
+
+  Future<void> activateMagnet() async {
+    // 0) Trừ lượt & lưu
+    setState(() {
+      magnetCount--;
+      magnetActive = true;
+    });
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt('magnet', magnetCount);
+
+    // 1) Hiệu ứng quầng sáng quanh nhân vật
+    final glowKey = UniqueKey();
+    safeSetState(() {
+      magnetGlow
+        ..clear() // luôn chỉ 1 glow
+        ..add(MagnetPulse(
+          key: glowKey,
+          position: playerPosition,
+        ));
+    });
+
+    // 2) Kéo vật phẩm về phía player trong 2 giây
+    magnetTimer?.cancel();
+    magnetTimer = Timer(const Duration(seconds: 2), () {
+      if (mounted) {
+        safeSetState(() {
+          magnetActive = false;
+          magnetGlow.removeWhere((w) => w.key == glowKey);
+        });
+      }
+    });
   }
 
   void activateFreeze() async {
@@ -355,7 +575,15 @@ class _Game1PageState extends State<Game1Page> {
     }
   }
 
+  Future<void> _playGameOverSound() async {
+    try {
+      await _sfxPlayer.stop();
+      await _sfxPlayer.play(AssetSource('sounds/gameover.mp3'), volume: 0.9);
+    } catch (_) {/* ignore */}
+  }
+
   void activateFlash() async {
+    _playFlashSound();
     safeSetState(() {
       flashCount--;
     });
@@ -365,6 +593,7 @@ class _Game1PageState extends State<Game1Page> {
 
     // Hiển thị hiệu ứng lightning tại vị trí enemy
     for (var e in enemies) {
+      showHitEffect(e.position);
       final effect = Positioned(
         left: e.position.dx - 32,
         top: e.position.dy - 32,
@@ -395,9 +624,15 @@ class _Game1PageState extends State<Game1Page> {
     }
   }
 
+  Future<void> _playItemSound() async {
+    try {
+      await _sfxPlayer.play(AssetSource('sounds/get.mp3'), volume: 0.8);
+    } catch (_) {/* ignore */}
+  }
+
   Future<void> triggerWin() async {
     isGameOver = true;
-
+    _playGameOverSound();
     // Hủy tất cả timer
     spawnTimer?.cancel();
     moveTimer?.cancel();
@@ -483,6 +718,7 @@ class _Game1PageState extends State<Game1Page> {
 
   void triggerGameOver() {
     isGameOver = true;
+    _playGameOverSound();
 
     // Hủy mọi Timer nếu muốn
     spawnTimer?.cancel();
@@ -580,6 +816,15 @@ class _Game1PageState extends State<Game1Page> {
     );
   }
 
+  Future<void> _playFlashSound() async {
+    try {
+      await _sfxPlayer.play(
+        AssetSource('sounds/flash.mp3'),
+        volume: 0.9,
+      );
+    } catch (_) {/* ignore */}
+  }
+
   void collectGolds() {
     final List<Gold> collected = [];
 
@@ -587,6 +832,7 @@ class _Game1PageState extends State<Game1Page> {
       if (!g.collected && (g.position - playerPosition).distance < 30) {
         g.collected = true;
         collected.add(g);
+        _playItemSound();
 
         // Xác định vị trí bay
         final start = g.position;
@@ -624,6 +870,7 @@ class _Game1PageState extends State<Game1Page> {
       if (!c.collected && (c.position - playerPosition).distance < 30) {
         c.collected = true;
         collected.add(c);
+        _playItemSound();
 
         // Hiệu ứng + cộng chest
         safeSetState(() {
@@ -659,6 +906,8 @@ class _Game1PageState extends State<Game1Page> {
       if (!h.collected && (h.position - playerPosition).distance < 30) {
         h.collected = true;
         collectedHeals.add(h);
+
+        _playItemSound();
 
         // Hồi đầy máu
         safeSetState(() {
@@ -703,19 +952,16 @@ class _Game1PageState extends State<Game1Page> {
     return Scaffold(
       body: GestureDetector(
         onPanStart: (details) {
-          safeSetState(() {
-            touchPosition = details.localPosition;
-          });
+          final pos = details.localPosition;
+          safeSetState(() => touchPosition = pos);
+          showMoveMarker(pos); // 👉 luôn add marker mới
         },
         onPanUpdate: (details) {
-          safeSetState(() {
-            touchPosition = details.localPosition;
-          });
+          // Giữ touchPosition để nhân vật tiếp tục đuổi theo con trỏ
+          safeSetState(() => touchPosition = details.localPosition);
         },
         onPanEnd: (_) {
-          safeSetState(() {
-            touchPosition = null;
-          });
+          safeSetState(() => touchPosition = null);
         },
         child: Stack(
           children: [
@@ -744,12 +990,18 @@ class _Game1PageState extends State<Game1Page> {
             ),
 
             // Player
+            ...magnetGlow,
+            ...powerAuras,
             Positioned(
               left: playerPosition.dx - 25,
               top: playerPosition.dy - 25,
-              child: Image.asset('assets/images/player.png', width: 50),
+              child: Transform.scale(
+                scale: powerActive ? 1.5 : 1.0, // to lên 1.5×
+                child: Image.asset('assets/images/player.png', width: 50),
+              ),
             ),
             ...healingEffects,
+            ...hitEffects,
             // Enemies
             ...enemies.map((e) {
               return Stack(
@@ -851,6 +1103,7 @@ class _Game1PageState extends State<Game1Page> {
                 }),
               ),
             ),
+            ...moveMarkers,
             Positioned(
               top: 160,
               right: 20,
@@ -888,6 +1141,44 @@ class _Game1PageState extends State<Game1Page> {
                         const SizedBox(width: 6),
                         Text(
                           '$freezeCount',
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 16),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  GestureDetector(
+                    onTap: () {
+                      if (magnetCount > 0 && !isGameOver) {
+                        activateMagnet();
+                      }
+                    },
+                    child: Row(
+                      children: [
+                        Image.asset('assets/images/magnet.png', width: 24),
+                        const SizedBox(width: 6),
+                        Text(
+                          '$magnetCount',
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 16),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  GestureDetector(
+                    onTap: () {
+                      if (powerCount > 0 && !isGameOver) {
+                        activatePower();
+                      }
+                    },
+                    child: Row(
+                      children: [
+                        Image.asset('assets/images/power.png', width: 24),
+                        const SizedBox(width: 6),
+                        Text(
+                          '$powerCount',
                           style: const TextStyle(
                               color: Colors.white, fontSize: 16),
                         ),
@@ -1011,6 +1302,148 @@ class _AnimatedFlyingGoldState extends State<AnimatedFlyingGold>
   @override
   void dispose() {
     _controller.dispose();
+    super.dispose();
+  }
+}
+
+class MagnetPulse extends StatefulWidget {
+  final Offset position;
+  final double size;
+  const MagnetPulse({
+    super.key,
+    required this.position,
+    this.size = 80,
+  });
+
+  @override
+  State<MagnetPulse> createState() => _MagnetPulseState();
+}
+
+class _MagnetPulseState extends State<MagnetPulse>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+  late final Animation<double> _scale;
+  late final Animation<double> _opacity;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 600),
+    )..repeat(reverse: true); // phồng–xẹp loop
+
+    _scale = Tween(begin: 1.0, end: 1.25).animate(_ctrl);
+    _opacity = Tween(begin: 0.7, end: 0.15).animate(_ctrl);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _ctrl,
+      builder: (_, __) => Positioned(
+        left: widget.position.dx - widget.size / 2,
+        top: widget.position.dy - widget.size / 2,
+        child: Transform.scale(
+          scale: _scale.value,
+          child: Container(
+            width: widget.size,
+            height: widget.size,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              // RadialGradient cho cảm giác “năng lượng”
+              gradient: RadialGradient(
+                colors: [
+                  Colors.cyanAccent.withOpacity(_opacity.value),
+                  Colors.transparent
+                ],
+                stops: const [0.0, 1.0],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+}
+
+class PowerAura extends StatefulWidget {
+  final Offset center;
+  const PowerAura({super.key, required this.center});
+
+  @override
+  State<PowerAura> createState() => _PowerAuraState();
+}
+
+class _PowerAuraState extends State<PowerAura>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _c;
+  late final Animation<double> _scale;
+  late final Animation<double> _angle;
+
+  @override
+  void initState() {
+    super.initState();
+    _c = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 800),
+    )..repeat(); // loop liên tục
+
+    _scale = Tween(begin: .9, end: 1.3)
+        .animate(CurvedAnimation(parent: _c, curve: Curves.easeInOut));
+
+    _angle = Tween(begin: 0.0, end: 2 * pi).animate(_c);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _c,
+      builder: (_, __) {
+        final size = 90 * _scale.value; // phồng–xẹp
+        return Positioned(
+          left: widget.center.dx - size / 2,
+          top: widget.center.dy - size / 2,
+          child: Transform.rotate(
+            angle: _angle.value, // xoay tròn
+            child: Container(
+              width: size,
+              height: size,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: SweepGradient(
+                  // “xoáy” vàng–cam
+                  colors: [
+                    Colors.deepOrangeAccent.withOpacity(.0),
+                    Colors.yellow.withOpacity(.7),
+                    Colors.orange.withOpacity(.0),
+                  ],
+                  stops: const [0.25, 0.55, 1],
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.amberAccent.withOpacity(.5),
+                    blurRadius: 12,
+                    spreadRadius: 2,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
     super.dispose();
   }
 }

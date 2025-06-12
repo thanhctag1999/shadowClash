@@ -1,4 +1,5 @@
 import 'dart:math';
+import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -10,24 +11,38 @@ class StorePage extends StatefulWidget {
 }
 
 class _StorePageState extends State<StorePage> {
+  late final AudioPlayer _sfxPlayer;
+
   int gold = 0;
   int freeze = 0;
   int flash = 0;
+  int magnet = 0;
   int chest = 0;
+  int power = 0;
 
   @override
   void initState() {
     super.initState();
+    _sfxPlayer = AudioPlayer()..setReleaseMode(ReleaseMode.stop);
     _loadResources();
+  }
+
+  Future<void> _playItemSound() async {
+    try {
+      await _sfxPlayer.play(AssetSource('sounds/get.mp3'), volume: 0.9);
+    } catch (_) {/* ignore */}
   }
 
   Future<void> _loadResources() async {
     final prefs = await SharedPreferences.getInstance();
+    prefs.setInt('gold', 99999);
     setState(() {
       gold = prefs.getInt('gold') ?? 0;
       freeze = prefs.getInt('freeze') ?? 0;
       flash = prefs.getInt('flash') ?? 0;
+      magnet = prefs.getInt('magnet') ?? 0;
       chest = prefs.getInt('chest') ?? 0;
+      power = prefs.getInt('power') ?? 0;
     });
   }
 
@@ -36,18 +51,25 @@ class _StorePageState extends State<StorePage> {
     await prefs.setInt('gold', gold);
     await prefs.setInt('freeze', freeze);
     await prefs.setInt('flash', flash);
+    await prefs.setInt('magnet', magnet);
     await prefs.setInt('chest', chest);
+    await prefs.setInt('power', power);
   }
 
   void _buyItem(String item) {
     const itemCost = 100;
     if (gold >= itemCost) {
+      _playItemSound();
       setState(() {
         gold -= itemCost;
         if (item == 'freeze') {
           freeze++;
         } else if (item == 'flash') {
           flash++;
+        } else if (item == 'magnet') {
+          magnet++;
+        } else if (item == 'power') {
+          power++;
         }
       });
       _saveResources();
@@ -61,6 +83,7 @@ class _StorePageState extends State<StorePage> {
       _showMessage('No chest left!');
       return;
     }
+    _playItemSound();
 
     int reward = [5, 10, 15][Random().nextInt(3)];
     setState(() {
@@ -134,6 +157,8 @@ class _StorePageState extends State<StorePage> {
                             _buildResourceRow('gold.png', gold),
                             _buildResourceRow('freeze.png', freeze),
                             _buildResourceRow('flash.png', flash),
+                            _buildResourceRow('magnet.png', magnet),
+                            _buildResourceRow('power.png', power),
                           ],
                         ),
                         const SizedBox(height: 30),
@@ -152,6 +177,18 @@ class _StorePageState extends State<StorePage> {
                           title: 'Flash',
                           description: 'Reveal cards instantly. Cost: 100 gold',
                           onPressed: () => _buyItem('flash'),
+                        ),
+                        _buildStoreItem(
+                          image: 'magnet.png',
+                          title: 'Magnet',
+                          description: 'Suck all items Cost: 100 gold',
+                          onPressed: () => _buyItem('magnet'),
+                        ),
+                        _buildStoreItem(
+                          image: 'power.png',
+                          title: 'Power',
+                          description: 'Upgrade power: 200 gold',
+                          onPressed: () => _buyItem('power'),
                         ),
 
                         // Chest Card
